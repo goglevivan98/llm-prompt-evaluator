@@ -1,5 +1,6 @@
 # LLM Prompt Evaluator
 ![Tests](https://github.com/goglevivan98/llm-prompt-evaluator/actions/workflows/tests.yml/badge.svg)
+
 A QA tool for evaluating LLM responses. Supports both **HuggingFace Inference API** (online) and **local model** (offline) modes.
 
 ## What it does
