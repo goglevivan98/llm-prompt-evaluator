@@ -9,6 +9,7 @@ Usage:
     python evaluator.py                        # auto-detect (API if token set, else local)
     python evaluator.py --mode api             # force API mode
     python evaluator.py --mode local           # force local mode
+    python evaluator.py --mode local --model google/flan-t5-base
     python evaluator.py --config my.json
 """
 
@@ -16,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import sys
 import time
@@ -27,6 +29,13 @@ import requests
 import metrics as m
 import reporter
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%H:%M:%S",
+)
+logger = logging.getLogger(__name__)
+
 _CONFIG: Optional[dict] = None
 _local_pipeline = None
 
@@ -36,6 +45,7 @@ _local_pipeline = None
 # ---------------------------------------------------------------------------
 
 def load_config(path: str = "config.json") -> dict:
+    """Read and cache config.json. Called once; result is cached."""
     global _CONFIG
     if _CONFIG is not None:
         return _CONFIG
@@ -56,10 +66,12 @@ def load_config(path: str = "config.json") -> dict:
 # ---------------------------------------------------------------------------
 
 def _hf_token() -> Optional[str]:
+    """Read HF_TOKEN from environment (optional for public models)."""
     return os.environ.get("HF_TOKEN")
 
 
 def _query_api(prompt: str, api_url: str, model: str, timeout: float = 10.0) -> str:
+    """POST a prompt to the HuggingFace Inference API and return the response text."""
     url = api_url.rstrip("/") + "/" + model
     headers = {"Content-Type": "application/json"}
     token = _hf_token()
@@ -99,24 +111,39 @@ def _query_api(prompt: str, api_url: str, model: str, timeout: float = 10.0) -> 
 # Local mode
 # ---------------------------------------------------------------------------
 
-def _get_local_pipeline():
+def _get_local_pipeline(model_name: str = None):
+    """Load a local HuggingFace model once and cache it. Uses T5/FLAN for text2text generation."""
     global _local_pipeline
     if _local_pipeline is None:
-        from transformers import pipeline
-        print("Loading local model (first time only)...")
-        _local_pipeline = pipeline(
-            "text-generation",
-            model="distilgpt2",
-            device=-1,
-        )
+        from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
+        if model_name is None:
+            model_name = "google/flan-t5-small"
+        print(f"Loading local model: {model_name} ...")
+
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
+
+        def generate(prompt, max_new_tokens=150):
+            inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=512)
+            outputs = model.generate(
+                **inputs,
+                max_new_tokens=max_new_tokens,
+                do_sample=False,          # Greedy decoding — fewer repetitions
+                num_beams=3,              # Beam search — higher quality
+                no_repeat_ngram_size=3,   # Prevent repeating trigrams
+                early_stopping=True,
+            )
+            return tokenizer.decode(outputs[0], skip_special_tokens=True)
+
+        _local_pipeline = generate
         print("Model loaded.\n")
     return _local_pipeline
 
 
-def _query_local(prompt: str, max_new_tokens: int = 100) -> str:
-    pipe = _get_local_pipeline()
-    result = pipe(prompt, max_new_tokens=max_new_tokens, do_sample=False)
-    return result[0]["generated_text"].strip()
+def _query_local(prompt: str, max_new_tokens: int = 150, model_name: str = None) -> str:
+    """Run a prompt through the local model and return the generated text."""
+    pipe = _get_local_pipeline(model_name)
+    return pipe(prompt, max_new_tokens=max_new_tokens)
 
 
 # ---------------------------------------------------------------------------
@@ -124,8 +151,10 @@ def _query_local(prompt: str, max_new_tokens: int = 100) -> str:
 # ---------------------------------------------------------------------------
 
 def query_model(prompt: str, config: dict, mode: str = "auto") -> str:
+    """Send a prompt to the model (API, local, or auto-detect)."""
     if mode == "local":
-        return _query_local(prompt)
+        model_name = config.get("local_model", "google/flan-t5-small")
+        return _query_local(prompt, model_name=model_name)
     elif mode == "api":
         return _query_api(prompt, config["api_url"], config["model"], config.get("max_response_time_sec", 10))
     else:  # auto
@@ -134,9 +163,11 @@ def query_model(prompt: str, config: dict, mode: str = "auto") -> str:
                 return _query_api(prompt, config["api_url"], config["model"], config.get("max_response_time_sec", 10))
             except Exception:
                 print("  (API failed, falling back to local model)")
-                return _query_local(prompt)
+                model_name = config.get("local_model", "google/flan-t5-small")
+                return _query_local(prompt, model_name=model_name)
         else:
-            return _query_local(prompt)
+            model_name = config.get("local_model", "google/flan-t5-small")
+            return _query_local(prompt, model_name=model_name)
 
 
 # ---------------------------------------------------------------------------
@@ -144,6 +175,7 @@ def query_model(prompt: str, config: dict, mode: str = "auto") -> str:
 # ---------------------------------------------------------------------------
 
 def evaluate_one(test_case: dict, config: dict, mode: str = "auto") -> dict:
+    """Run a single test case end-to-end and return a structured result dict."""
     tc_id = test_case["id"]
     prompt = test_case["prompt"]
     expected = test_case["expected"]
@@ -163,10 +195,14 @@ def evaluate_one(test_case: dict, config: dict, mode: str = "auto") -> dict:
         "checks": {},
     }
 
+    # Log the prompt
+    logger.info("[%s] Prompt: %s", tc_id, prompt[:100])
+
     t0 = time.monotonic()
     try:
         response_text = query_model(prompt, config, mode)
     except Exception as exc:
+        logger.error("[%s] Model error: %s", tc_id, exc)
         result["error_message"] = f"Model error: {exc}"
         result["response_time_sec"] = round(time.monotonic() - t0, 2)
         return result
@@ -174,9 +210,13 @@ def evaluate_one(test_case: dict, config: dict, mode: str = "auto") -> dict:
     result["response_time_sec"] = round(time.monotonic() - t0, 2)
     result["response"] = response_text
 
+    # Log the response
+    logger.info("[%s] Response: %s", tc_id, response_text[:150])
+
     try:
         checks = m.run_all_checks(response_text, expected)
     except Exception as exc:
+        logger.error("[%s] Metrics error: %s", tc_id, exc)
         result["error_message"] = f"Metrics error: {exc}"
         return result
 
@@ -208,10 +248,18 @@ def evaluate_one(test_case: dict, config: dict, mode: str = "auto") -> dict:
     else:
         result["status"] = "PASS"
 
+    # Log the result
+    logger.info("[%s] Result: %s", tc_id, result["status"])
+
     return result
 
 
+# ---------------------------------------------------------------------------
+# Full run
+# ---------------------------------------------------------------------------
+
 def run_evaluation(config_path: str = "config.json", mode: str = "auto") -> list[dict]:
+    """Run all test cases from the config and return the results list."""
     config = load_config(config_path)
     results = []
 
@@ -224,6 +272,10 @@ def run_evaluation(config_path: str = "config.json", mode: str = "auto") -> list
     return results
 
 
+# ---------------------------------------------------------------------------
+# CLI entry point
+# ---------------------------------------------------------------------------
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="LLM Prompt Evaluator (hybrid: API + local)")
     parser.add_argument("--config", default="config.json", help="Path to config JSON")
@@ -231,10 +283,18 @@ def main() -> None:
     parser.add_argument("--csv-out", default="report.csv", help="CSV report path")
     parser.add_argument("--mode", choices=["api", "local", "auto"], default="auto",
                         help="Run mode: api (internet), local (offline), auto (detect)")
+    parser.add_argument("--model", default=None,
+                        help="Override local model (e.g., 'google/flan-t5-base', 'distilgpt2')")
     args = parser.parse_args()
+
+    # Override model from CLI argument
+    config = load_config(args.config)
+    if args.model:
+        config["local_model"] = args.model
 
     print(f"\n{'=' * 60}")
     print(f"LLM Prompt Evaluator (mode: {args.mode})")
+    print(f"Local model: {config.get('local_model', 'google/flan-t5-small')}")
     print(f"{'=' * 60}\n")
 
     results = run_evaluation(args.config, args.mode)

@@ -18,16 +18,18 @@ As a QA Automation Engineer, I wanted to explore how testing principles apply to
 ## Project structure
 ```
 llm-prompt-evaluator/
-├── config.json # Test cases and expected criteria
-├── evaluator.py # Core engine: hybrid mode (API + local)
-├── metrics.py # Validation checks: length, keywords, sentiment
-├── reporter.py # Report generation: console, JSON, CSV
-├── test_evaluator.py # Pytest test suite (41 tests)
-├── requirements.txt # Python dependencies
-├── report.json # Generated test report (JSON)
-├── report.csv # Generated test report (CSV)
-├── report.html # Generated test report (HTML, from pytest-html)
-└── README.md # This file
+├── config.json          # Test cases and expected criteria
+├── evaluator.py         # Core engine: hybrid mode (API + local)
+├── metrics.py           # Validation checks: length, keywords, sentiment
+├── reporter.py          # Report generation: console, JSON, CSV
+├── test_evaluator.py    # Pytest test suite (unit + integration tests)
+├── conftest.py          # Pytest fixtures and --model CLI option
+├── pytest.ini           # Pytest configuration
+├── requirements.txt     # Python dependencies
+├── report.json          # Generated test report (JSON)
+├── report.csv           # Generated test report (CSV)
+├── report.html          # Generated test report (HTML)
+└── README.md            # This file
 ```
 
 
@@ -58,29 +60,46 @@ pip install -r requirements.txt
 ### Run evaluator
 
 ```bash
-python evaluator.py                     # auto: tries API first, falls back to local
-python evaluator.py --mode local        # offline mode (no internet needed after first download)
-python evaluator.py --mode api          # online mode (requires HF_TOKEN and internet)
+# Auto mode: tries API first, falls back to local
+python evaluator.py
+
+# Local mode with default model (google/flan-t5-small)
+python evaluator.py --mode local
+
+# Local mode with a specific model
+python evaluator.py --mode local --model google/flan-t5-base
+
+# API mode (requires HF_TOKEN)
+python evaluator.py --mode api
 ```
 
 First run in local mode will download the model (~330 MB, one time only).
 
 API mode requires a HuggingFace token:
-
-    Get your token at https://huggingface.co/settings/tokens
-
-    Set environment variable: $env:HF_TOKEN="your_token_here" (Windows) or export HF_TOKEN="your_token" (Linux/Mac)
+```text
+1. Get your token at https://huggingface.co/settings/tokens
+2. Set environment variable:
+   - Windows: $env:HF_TOKEN="your_token_here"
+   - Linux/Mac: export HF_TOKEN="your_token"
+```
 
 ### Run tests
 
 ```bash
-pytest test_evaluator.py -v
+# Unit tests only (fast, no model download)
+pytest test_evaluator.py -m "not integration" -v
+
+# Integration tests with real model
+pytest test_evaluator.py -m integration --model google/flan-t5-base -v
+
+# All tests
+pytest test_evaluator.py --model google/flan-t5-base -v
 ```
 
 ### Generate HTML report
 
 ```bash
-pytest test_evaluator.py -v --html=report.html --self-contained-html
+pytest test_evaluator.py --model google/flan-t5-base -v --html=report.html --self-contained-html
 start report.html
 ```
 
@@ -98,6 +117,16 @@ start report.html
 | auto     | python evaluator.py              |Tries API first; falls back to local if no token or API fails|
 | local    | python evaluator.py --mode local | Uses downloaded model (no internet needed) |
 |api | python evaluator.py --mode api | Uses HuggingFace Inference API (requires HF_TOKEN) |
+
+## Supported models
+
+Any HuggingFace model works. Tested with:
+
+| Model | Size | Quality | Command |
+|-------|------|---------|---------|
+| google/flan-t5-small | ~300 MB | Basic | --model google/flan-t5-small |
+| google/flan-t5-base | ~1 GB | Good | --model google/flan-t5-base |
+| distilgpt2 | ~330 MB | Basic | --model distilgpt2 |
 
 ## Sample output
 
@@ -153,12 +182,13 @@ Edit `config.json` to add your own test cases:
 ## Tech stack
 
 - Python 3.10+
-- HuggingFace Transformers — local model (distilgpt2)
-- pytest — test framework (49 tests)
+- HuggingFace Transformers — local models (FLAN-T5, distilgpt2)
+- HuggingFace Inference API — remote models (optional)
+- pytest — test framework (unit + integration tests)
 - pytest-html — HTML report generation
 - requests — HTTP client for API mode
 
 # Author
 
 Ivan Goglev - QA Automation Engineer
-GitHub: goglevivan98
+- GitHub: goglevivan98
