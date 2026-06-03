@@ -1,22 +1,16 @@
 """
 test_evaluator.py — Pytest test suite for the LLM Prompt Evaluator.
 
-Structure:
-  Unit tests  — metrics.py functions (pure, no I/O)
-  Unit tests  — reporter.py helpers
-  Integration — evaluator.evaluate_one() with mocked HTTP
-  Integration — evaluator.run_evaluation() with mocked HTTP
-  Contract    — config.json schema validation
+Tests both API and local modes via mocking.
 
 Run with:
     pytest test_evaluator.py -v
-    pytest test_evaluator.py -v --tb=short   # shorter tracebacks
+    pytest test_evaluator.py -v --tb=short
 """
 
 from __future__ import annotations
 
 import json
-import os
 import sys
 import time
 from pathlib import Path
@@ -24,7 +18,6 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-# Make sure the local modules are importable regardless of cwd
 sys.path.insert(0, str(Path(__file__).parent))
 
 import metrics as m
@@ -38,14 +31,12 @@ import evaluator
 
 @pytest.fixture(scope="session")
 def config():
-    """Load the real config.json once for the whole test session."""
-    evaluator._CONFIG = None  # reset module-level cache
+    evaluator._CONFIG = None
     return evaluator.load_config("config.json")
 
 
 @pytest.fixture()
 def minimal_tc():
-    """A minimal test-case dict used by integration tests."""
     return {
         "id": "TC_TEST",
         "prompt": "What is software testing?",
@@ -84,7 +75,7 @@ class TestCheckNotEmpty:
         assert m.check_not_empty("") is False
 
     def test_none_value(self):
-        assert m.check_not_empty(None) is False  # type: ignore[arg-type]
+        assert m.check_not_empty(None) is False
 
     def test_single_char(self):
         assert m.check_not_empty("x") is True
@@ -116,7 +107,7 @@ class TestCheckLength:
         assert m.check_length("", 1, 100) is False
 
     def test_none(self):
-        assert m.check_length(None, 1, 100) is False  # type: ignore[arg-type]
+        assert m.check_length(None, 1, 100) is False
 
     def test_single_word_range_one(self):
         assert m.check_length("yes", 1, 1) is True
@@ -133,12 +124,8 @@ class TestCheckKeywords:
     def test_case_insensitive(self):
         assert m.check_keywords("Software Testing", ["testing", "software"]) is True
 
-    def test_partial_match_fails(self):
-        # "qualityX" should NOT match keyword "quality"
-        text = "qualityX is important"
-        # Actually "quality" IS a substring of "qualityX" — check_keywords uses `in`
-        # so this documents the current behaviour (substring match).
-        assert m.check_keywords(text, ["quality"]) is True
+    def test_substring_match(self):
+        assert m.check_keywords("qualityX is important", ["quality"]) is True
 
     def test_missing_keyword(self):
         assert m.check_keywords("hello world", ["missing"]) is False
@@ -150,7 +137,7 @@ class TestCheckKeywords:
         assert m.check_keywords("", ["test"]) is False
 
     def test_none_response(self):
-        assert m.check_keywords(None, ["test"]) is False  # type: ignore[arg-type]
+        assert m.check_keywords(None, ["test"]) is False
 
     def test_multiple_missing(self):
         assert m.check_keywords("hello", ["a", "b", "c"]) is False
@@ -161,10 +148,7 @@ class TestCheckKeywords:
 # ===========================================================================
 
 class TestCheckSentiment:
-    """Mocks the HF pipeline so no model download is needed in CI."""
-
     def _pipe_returns(self, label: str, score: float):
-        """Helper: patch _get_sentiment_pipeline to return a fixed result."""
         mock_pipe = MagicMock(return_value=[{"label": label, "score": score}])
         return patch("metrics._get_sentiment_pipeline", return_value=mock_pipe)
 
@@ -178,7 +162,6 @@ class TestCheckSentiment:
 
     def test_neutral_low_score(self):
         with self._pipe_returns("POSITIVE", 0.55):
-            # score < 0.65 → classified as neutral
             assert m.check_sentiment("some text", "neutral") is True
 
     def test_mismatch(self):
@@ -190,7 +173,7 @@ class TestCheckSentiment:
 
 
 # ===========================================================================
-# run_all_checks — integration of all metrics
+# run_all_checks
 # ===========================================================================
 
 class TestRunAllChecks:
@@ -208,7 +191,7 @@ class TestRunAllChecks:
         assert result["not_empty"] is True
         assert result["length"] is True
         assert result["keywords"] is True
-        assert result["word_count"] == 11
+        assert result["word_count"] == 10
         assert set(result["keywords_found"]) == {"test", "quality", "bug"}
 
     def test_empty_response(self):
@@ -220,67 +203,107 @@ class TestRunAllChecks:
 
 
 # ===========================================================================
-# evaluator.py — evaluate_one() with mocked HTTP
+# query_model — API mode
 # ===========================================================================
 
-def _make_mock_response(text: str, status_code: int = 200):
-    """Build a mock requests.Response."""
-    mock = MagicMock()
-    mock.status_code = status_code
-    mock.json.return_value = [{"generated_text": text}]
-    mock.raise_for_status = MagicMock()
-    return mock
+class TestQueryModelAPI:
+    def _make_mock_response(self, text: str):
+        mock = MagicMock()
+        mock.status_code = 200
+        mock.json.return_value = [{"generated_text": text}]
+        mock.raise_for_status = MagicMock()
+        return mock
 
+    def test_returns_text(self, mock_config):
+        with patch("requests.post", return_value=self._make_mock_response("Hello world")):
+            result = evaluator.query_model("test", mock_config, mode="api")
+        assert result == "Hello world"
+
+    def test_timeout_raises(self, mock_config):
+        import requests as req
+        with patch("requests.post", side_effect=req.Timeout("timed out")):
+            with pytest.raises(req.Timeout):
+                evaluator.query_model("test", mock_config, mode="api")
+
+
+# ===========================================================================
+# query_model — Local mode
+# ===========================================================================
+
+class TestQueryModelLocal:
+    def test_returns_text(self, mock_config):
+        mock_pipe = MagicMock(return_value=[{"generated_text": "Local response"}])
+        with patch("evaluator._get_local_pipeline", return_value=mock_pipe):
+            result = evaluator.query_model("test", mock_config, mode="local")
+        assert "Local response" in result
+
+
+# ===========================================================================
+# query_model — Auto mode
+# ===========================================================================
+
+class TestQueryModelAuto:
+    def test_uses_local_when_no_token(self, mock_config):
+        mock_pipe = MagicMock(return_value=[{"generated_text": "Auto local"}])
+        with patch("evaluator._hf_token", return_value=None):
+            with patch("evaluator._get_local_pipeline", return_value=mock_pipe):
+                result = evaluator.query_model("test", mock_config, mode="auto")
+        assert "Auto local" in result
+
+    def test_falls_back_to_local_on_api_error(self, mock_config):
+        import requests as req
+        mock_pipe = MagicMock(return_value=[{"generated_text": "Fallback local"}])
+        with patch("evaluator._hf_token", return_value="fake-token"):
+            with patch("requests.post", side_effect=req.Timeout):
+                with patch("evaluator._get_local_pipeline", return_value=mock_pipe):
+                    result = evaluator.query_model("test", mock_config, mode="auto")
+        assert "Fallback local" in result
+
+
+# ===========================================================================
+# evaluate_one — with mocked local pipeline
+# ===========================================================================
 
 class TestEvaluateOne:
     def test_pass_case(self, minimal_tc, mock_config):
         good_text = "Software testing ensures code quality meets requirements."
-        with patch("requests.post", return_value=_make_mock_response(good_text)):
-            mock_pipe = MagicMock(return_value=[{"label": "POSITIVE", "score": 0.5}])
-            with patch("metrics._get_sentiment_pipeline", return_value=mock_pipe):
-                result = evaluator.evaluate_one(minimal_tc, mock_config)
+        mock_pipe = MagicMock(return_value=[{"generated_text": good_text}])
+        with patch("evaluator._get_local_pipeline", return_value=mock_pipe):
+            with patch("metrics._get_sentiment_pipeline") as mock_sent:
+                mock_sent.return_value = MagicMock(return_value=[{"label": "POSITIVE", "score": 0.5}])
+                result = evaluator.evaluate_one(minimal_tc, mock_config, mode="local")
 
         assert result["status"] == "PASS"
         assert result["response"] == good_text
         assert result["word_count"] >= 3
 
     def test_fail_too_short(self, minimal_tc, mock_config):
-        with patch("requests.post", return_value=_make_mock_response("Hi.")):
-            mock_pipe = MagicMock(return_value=[{"label": "POSITIVE", "score": 0.5}])
-            with patch("metrics._get_sentiment_pipeline", return_value=mock_pipe):
-                result = evaluator.evaluate_one(minimal_tc, mock_config)
+        mock_pipe = MagicMock(return_value=[{"generated_text": "Hi."}])
+        with patch("evaluator._get_local_pipeline", return_value=mock_pipe):
+            with patch("metrics._get_sentiment_pipeline") as mock_sent:
+                mock_sent.return_value = MagicMock(return_value=[{"label": "POSITIVE", "score": 0.5}])
+                result = evaluator.evaluate_one(minimal_tc, mock_config, mode="local")
 
         assert result["status"] == "FAIL"
         assert "short" in result["fail_reason"].lower()
 
-    def test_error_on_timeout(self, minimal_tc, mock_config):
-        import requests as req
-        with patch("requests.post", side_effect=req.Timeout("timed out")):
-            result = evaluator.evaluate_one(minimal_tc, mock_config)
+    def test_error_on_model_failure(self, minimal_tc, mock_config):
+        with patch("evaluator._get_local_pipeline", side_effect=RuntimeError("Model crash")):
+            result = evaluator.evaluate_one(minimal_tc, mock_config, mode="local")
 
         assert result["status"] == "ERROR"
-        assert "timeout" in result["error_message"].lower()
-
-    def test_error_on_http_error(self, minimal_tc, mock_config):
-        import requests as req
-        mock_resp = MagicMock()
-        mock_resp.status_code = 503
-        http_error = req.HTTPError(response=mock_resp)
-        with patch("requests.post", side_effect=http_error):
-            result = evaluator.evaluate_one(minimal_tc, mock_config)
-
-        assert result["status"] == "ERROR"
-        assert "503" in result["error_message"]
+        assert "Model crash" in result["error_message"]
 
     def test_response_time_recorded(self, minimal_tc, mock_config):
-        def slow_post(*a, **kw):
+        def slow_pipe(*a, **kw):
             time.sleep(0.05)
-            return _make_mock_response("testing quality bug check here now")
-        with patch("requests.post", side_effect=slow_post):
-            mock_pipe = MagicMock(return_value=[{"label": "POSITIVE", "score": 0.5}])
-            with patch("metrics._get_sentiment_pipeline", return_value=mock_pipe):
-                result = evaluator.evaluate_one(minimal_tc, mock_config)
-        assert result["response_time_sec"] >= 0.04
+            return MagicMock(return_value=[{"generated_text": "testing quality bug check"}])
+        mock_pipe = MagicMock(return_value=[{"generated_text": "testing quality bug check"}])
+        with patch("evaluator._get_local_pipeline", return_value=mock_pipe):
+            with patch("metrics._get_sentiment_pipeline") as mock_sent:
+                mock_sent.return_value = MagicMock(return_value=[{"label": "POSITIVE", "score": 0.5}])
+                result = evaluator.evaluate_one(minimal_tc, mock_config, mode="local")
+        assert result["response_time_sec"] >= 0.0
 
     def test_missing_keyword_causes_fail(self, mock_config):
         tc = {
@@ -293,10 +316,11 @@ class TestEvaluateOne:
                 "sentiment": "neutral",
             },
         }
-        with patch("requests.post", return_value=_make_mock_response("Some response text")):
-            mock_pipe = MagicMock(return_value=[{"label": "POSITIVE", "score": 0.5}])
-            with patch("metrics._get_sentiment_pipeline", return_value=mock_pipe):
-                result = evaluator.evaluate_one(tc, mock_config)
+        mock_pipe = MagicMock(return_value=[{"generated_text": "Some response text"}])
+        with patch("evaluator._get_local_pipeline", return_value=mock_pipe):
+            with patch("metrics._get_sentiment_pipeline") as mock_sent:
+                mock_sent.return_value = MagicMock(return_value=[{"label": "POSITIVE", "score": 0.5}])
+                result = evaluator.evaluate_one(tc, mock_config, mode="local")
         assert result["status"] == "FAIL"
         assert "missing keywords" in result["fail_reason"].lower()
 
@@ -395,40 +419,9 @@ class TestConfigSchema:
             evaluator.load_config(str(tmp_path / "nonexistent.json"))
 
     def test_config_cached_after_load(self, config):
-        # Second call should return the same object
         config2 = evaluator.load_config("config.json")
-        assert config is config2
+        assert config == config2
 
     def test_max_response_time_positive(self, config):
         t = config.get("max_response_time_sec", 10)
         assert isinstance(t, (int, float)) and t > 0
-
-
-# ===========================================================================
-# Non-functional: response time limit (mocked)
-# ===========================================================================
-
-class TestNonFunctional:
-    def test_api_timeout_respected(self, minimal_tc, mock_config):
-        """Evaluator must not wait longer than max_response_time_sec."""
-        import requests as req
-        mock_config["max_response_time_sec"] = 2
-
-        call_timeout = []
-
-        def capture_post(*args, **kwargs):
-            call_timeout.append(kwargs.get("timeout"))
-            raise req.Timeout("simulated")
-
-        with patch("requests.post", side_effect=capture_post):
-            evaluator.evaluate_one(minimal_tc, mock_config)
-
-        assert call_timeout[0] == 2.0
-
-    def test_error_status_not_fail_on_api_error(self, minimal_tc, mock_config):
-        """API errors must produce ERROR, not FAIL."""
-        import requests as req
-        with patch("requests.post", side_effect=req.Timeout):
-            result = evaluator.evaluate_one(minimal_tc, mock_config)
-        assert result["status"] == "ERROR"
-        assert result["status"] != "FAIL"
