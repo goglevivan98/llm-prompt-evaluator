@@ -1,0 +1,82 @@
+{
+  "model": "google/flan-t5-base",
+  "api_url": "https://api-inference.huggingface.co/models/",
+  "max_response_time_sec": 10,
+  "test_cases": [
+    {
+      "id": "TC001",
+      "prompt": "What is software testing?",
+      "expected": {
+        "min_words": 5,
+        "max_words": 100,
+        "keywords": [
+          "test",
+          "quality",
+          "bug"
+        ],
+        "sentiment": "neutral",
+        "not_empty": true
+      }
+    },
+    {
+      "id": "TC002",
+      "prompt": "Explain quantum computing briefly.",
+      "expected": {
+        "min_words": 8,
+        "max_words": 60,
+        "keywords": [
+          "quantum",
+          "computing",
+          "qubit"
+        ],
+        "sentiment": "neutral",
+        "not_empty": true
+      }
+    },
+    {
+      "id": "TC003",
+      "prompt": "List benefits of agile methodology.",
+      "expected": {
+        "min_words": 10,
+        "max_words": 80,
+        "keywords": [
+          "agile",
+          "sprint",
+          "team"
+        ],
+        "sentiment": "positive",
+        "not_empty": true
+      }
+    },
+    {
+      "id": "TC004",
+      "prompt": "What causes software bugs?",
+      "expected": {
+        "min_words": 5,
+        "max_words": 70,
+        "keywords": [
+          "bug",
+          "error",
+          "code"
+        ],
+        "sentiment": "neutral",
+        "not_empty": true
+      }
+    },
+    {
+      "id": "TC005",
+      "prompt": "Describe CI/CD pipeline.",
+      "expected": {
+        "min_words": 8,
+        "max_words": 90,
+        "keywords": [
+          "continuous",
+          "deploy",
+          "integration"
+        ],
+        "sentiment": "neutral",
+        "not_empty": true
+      }
+    }
+  ]
+}
