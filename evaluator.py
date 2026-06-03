@@ -141,9 +141,17 @@ def _get_local_pipeline(model_name: str = None):
 
 
 def _query_local(prompt: str, max_new_tokens: int = 150, model_name: str = None) -> str:
-    """Run a prompt through the local model and return the generated text."""
     pipe = _get_local_pipeline(model_name)
-    return pipe(prompt, max_new_tokens=max_new_tokens)
+    result = pipe(prompt, max_new_tokens=max_new_tokens)
+    # Handle both transformers v4 (returns list[dict]) and v5 (returns str)
+    if isinstance(result, list) and len(result) > 0:
+        first = result[0]
+        if isinstance(first, dict):
+            return first.get("generated_text", str(first))
+        return str(first)
+    if isinstance(result, dict):
+        return result.get("generated_text", str(result))
+    return str(result)
 
 
 # ---------------------------------------------------------------------------
