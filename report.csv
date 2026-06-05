@@ -1,6 +1,0 @@
-id,status,prompt,word_count,keywords_found,expected_keywords,sentiment_ok,fail_reason,error_message,response_time_sec
-TC001,FAIL,What is software testing?,2,test,test; quality; bug,False,"too short (2 words); missing keywords: ['quality', 'bug']; sentiment mismatch (expected: neutral)",,12.48
-TC002,FAIL,Explain quantum computing briefly.,12,quantum,quantum; computing; qubit,False,"missing keywords: ['computing', 'qubit']; sentiment mismatch (expected: neutral)",,0.65
-TC003,FAIL,List benefits of agile methodology.,5,agile,agile; sprint; team,True,"too short (5 words); missing keywords: ['sprint', 'team']",,0.39
-TC004,FAIL,What causes software bugs?,1,,bug; error; code,False,"too short (1 words); missing keywords: ['bug', 'error', 'code']; sentiment mismatch (expected: neutral)",,0.22
-TC005,FAIL,Describe CI/CD pipeline.,2,,continuous; deploy; integration,False,"too short (2 words); missing keywords: ['continuous', 'deploy', 'integration']; sentiment mismatch (expected: neutral)",,0.25
